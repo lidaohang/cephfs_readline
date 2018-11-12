@@ -37,6 +37,52 @@ ngx_http_cephfs_request_parser(ngx_http_request_t *r);
 static ngx_int_t
 ngx_http_cephfs_response_body(ngx_http_request_t *r);
 
+static rados_t cluster = NULL;
+
+ngx_int_t
+ngx_http_cephfs_readline_start(ngx_cycle_t *cycle)
+{
+    int					    err;
+    ngx_uint_t                              flags = 0;
+    ngx_str_t                               cluster_name = ngx_string("ceph");
+    ngx_str_t                               ceph_conf = ngx_string("/etc/ceph/ceph.conf");
+    ngx_str_t                               user_name = ngx_string("client.admin");
+
+
+    /* Initialize the cluster handle with the "ceph" cluster name and the "client.admin" user */
+    err = rados_create2(&cluster, (char *)cluster_name.data, (char* ) user_name.data, flags);
+    if ( err < 0 ) {
+        ngx_log_error(NGX_LOG_ERR, cycle->log, 0,
+            "[cephfs_readline] couldn't create the cluster handle error=[%s]",strerror(-err));
+        return NGX_ERROR;
+    }
+
+    /* Read a Ceph configuration file to configure the cluster handle. */
+    err = rados_conf_read_file(cluster, (char *)ceph_conf.data);
+    if ( err < 0 ) {
+        ngx_log_error(NGX_LOG_ERR, cycle->log, 0,
+            "[cephfs_readline] cannot read config file error=[%s]", strerror(-err));
+        return NGX_ERROR;
+    }
+
+    /* Connect to the cluster */
+    err = rados_connect(cluster);
+    if ( err < 0 ) {
+        ngx_log_error(NGX_LOG_ERR, cycle->log, 0,
+            "[cephfs_readline] cannot connect to cluster error=[%s]", strerror(-err));
+        return NGX_ERROR;
+    }
+
+    return NGX_OK;
+}
+
+void
+ngx_http_cephfs_readline_exit(ngx_cycle_t *cycle)
+{
+    if ( cluster ) {
+    	rados_shutdown(cluster);
+    }
+}
 
 
 static ngx_int_t
@@ -131,14 +177,9 @@ ngx_http_cephfs_get_rados_line(ngx_http_request_t *r)
 {
     int                                     err;	
     char                                    buffer[line_size];
-    ngx_uint_t                              flags = 0;
     ngx_uint_t                              offset;
-    rados_t                                 cluster;
     rados_ioctx_t                           io;
     rados_completion_t                      comp;
-    ngx_str_t                               cluster_name = ngx_string("ceph");
-    ngx_str_t                               ceph_conf = ngx_string("/etc/ceph/ceph.conf");
-    ngx_str_t                               user_name = ngx_string("client.admin");
     ngx_http_cephfs_readline_ctx_t          *ctx;
 
 
@@ -153,33 +194,6 @@ ngx_http_cephfs_get_rados_line(ngx_http_request_t *r)
         return NGX_ERROR;
     }
 
-     /* Initialize the cluster handle with the "ceph" cluster name and the "client.admin" user */
-    err = rados_create2(&cluster, (char *)cluster_name.data, (char* ) user_name.data, flags);
-    if ( err < 0 ) {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-            "[cephfs_readline] couldn't create the cluster handle poolname=[%s] object_name=[%s] error=[%s]",
-            ctx->poolname.data, ctx->object_name.data, strerror(-err));
-        return NGX_ERROR;
-    }
-
-    /* Read a Ceph configuration file to configure the cluster handle. */
-    err = rados_conf_read_file(cluster, (char *)ceph_conf.data);
-    if ( err < 0 ) {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-            "[cephfs_readline] cannot read config file poolname=[%s] object_name=[%s] error=[%s]",
-            ctx->poolname.data, ctx->object_name.data, strerror(-err));
-        return NGX_ERROR;
-    }
-
-    /* Connect to the cluster */
-    err = rados_connect(cluster);
-    if ( err < 0 ) {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-            "[cephfs_readline] cannot connect to cluster poolname=[%s] object_name=[%s] error=[%s]",
-            ctx->poolname.data, ctx->object_name.data,  strerror(-err));
-        return NGX_ERROR;
-    }
-
     //create io
     ctx->poolname.data[ctx->poolname.len] = 0;
 
@@ -189,7 +203,6 @@ ngx_http_cephfs_get_rados_line(ngx_http_request_t *r)
             "[cephfs_readline] cannot open rados pool poolname=[%s] object_name=[%s] error=[%s]",
             ctx->poolname.data, ctx->object_name.data, strerror(-err));
 
-        rados_shutdown(cluster);
         return NGX_ERROR;
     }
 
@@ -204,7 +217,6 @@ ngx_http_cephfs_get_rados_line(ngx_http_request_t *r)
             ctx->poolname.data, ctx->object_name.data, strerror(-err));
 
         rados_ioctx_destroy(io);
-        rados_shutdown(cluster);
         return NGX_ERROR;
     }
 
@@ -217,17 +229,23 @@ ngx_http_cephfs_get_rados_line(ngx_http_request_t *r)
             "[cephfs_readline] cannot read object poolname=[%s] object_name=[%s] offset=[%d] error=[%s]",
             ctx->poolname.data, ctx->object_name.data, ctx->offset, strerror(-err));
 
+    	rados_aio_release(comp);
         rados_ioctx_destroy(io);
-        rados_shutdown(cluster);
         return NGX_ERROR;
     }
     /* Wait for the operation to complete */
     rados_aio_wait_for_complete(comp);
-    /* Release the asynchronous I/O complete handle to avoid memory leaks. */
-    rados_aio_release(comp);
+    err = rados_aio_get_return_value(comp);    
+    if ( err < 0 ) {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+            "[cephfs_readline] reados_aio_get_return_value poolname=[%s] object_name=[%s] offset=[%d] error=[%s]",
+            ctx->poolname.data, ctx->object_name.data, ctx->offset, strerror(-err));
 
-    rados_ioctx_destroy(io);
-    rados_shutdown(cluster);
+    	rados_aio_release(comp);
+        rados_ioctx_destroy(io);
+        return NGX_ERROR;
+    }
+    buffer[err] = 0;
 
     if ( ctx->next ) {
         ctx->next_line.len = strlen(buffer);
@@ -235,12 +253,17 @@ ngx_http_cephfs_get_rados_line(ngx_http_request_t *r)
         if ( ctx->next_line.data == NULL ) {
             ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                 "[cephfs_readline] ctx->next_line.data malloc is failed");
+    	    /* Release the asynchronous I/O complete handle to avoid memory leaks. */
+    	    rados_aio_release(comp);
+    	    rados_ioctx_destroy(io);
             return NGX_ERROR;
         }
         ngx_memcpy(ctx->next_line.data, buffer, ctx->next_line.len);
 
         ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0,
             "[cephfs_readline] next_line.len=[%d] next_line.data=[%s]", ctx->next_line.len, ctx->next_line.data);
+    	rados_aio_release(comp);
+    	rados_ioctx_destroy(io);
         return NGX_OK;
     }
 
@@ -249,12 +272,20 @@ ngx_http_cephfs_get_rados_line(ngx_http_request_t *r)
     if ( ctx->line.data == NULL ) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
             "[cephfs_readline] ctx->next_line.data malloc is failed");
+    	    /* Release the asynchronous I/O complete handle to avoid memory leaks. */
+    	rados_aio_release(comp);
+    	rados_ioctx_destroy(io);
         return NGX_ERROR;
     }
     ngx_memcpy(ctx->line.data, buffer, ctx->line.len);
 
     ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0,
         "[cephfs_readline] line.len=[%d] line.data=[%s]", ctx->line.len, ctx->line.data);
+    
+    /* Release the asynchronous I/O complete handle to avoid memory leaks. */
+    rados_aio_release(comp);
+    rados_ioctx_destroy(io);
+    
     return NGX_OK;
 }
 
@@ -349,7 +380,7 @@ ngx_http_cephfs_readline_request(ngx_http_request_t *r)
 
         ctx->body.len = ctx->line.len + strlen((char*)ctx->next_line.data);
         ctx->body.data = ngx_pcalloc(r->connection->pool, ctx->body.len);
-        if ( ctx->body.data != NULL ) {
+        if ( ctx->body.data == NULL ) {
             ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "[cephfs_readline] ctx->body.data malloc is failed");
             ctx->code = NGX_ERROR;
             goto done;
@@ -361,7 +392,7 @@ ngx_http_cephfs_readline_request(ngx_http_request_t *r)
 
     ctx->body.len = ctx->line.len + (line_size - ctx->line.len);
     ctx->body.data = ngx_pcalloc(r->connection->pool, ctx->body.len);
-    if ( ctx->body.data != NULL ) {
+    if ( ctx->body.data == NULL ) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "[cephfs_readline] ctx->body.data malloc is failed");
         ctx->code = NGX_ERROR;
         goto done;

@@ -345,9 +345,7 @@ ngx_http_cephfs_readline_init_process(ngx_cycle_t *cycle)
 {
     ngx_log_error(NGX_LOG_DEBUG, cycle->log, 0, "[cephfs_readline] init process");
 
-    //todo
-
-    return NGX_OK;
+    return ngx_http_cephfs_readline_start(cycle);
 }
 
 
@@ -356,6 +354,6 @@ ngx_http_cephfs_readline_exit_process(ngx_cycle_t *cycle)
 {
     ngx_log_error(NGX_LOG_DEBUG, cycle->log, 0, "[cephfs_readline] exit process");
 
-    //todo
+    ngx_http_cephfs_readline_exit(cycle);
 }
 

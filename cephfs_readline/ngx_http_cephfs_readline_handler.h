@@ -15,6 +15,12 @@
 extern ngx_module_t ngx_http_cephfs_readline_module;
 
 ngx_int_t
+ngx_http_cephfs_readline_start(ngx_cycle_t *cycle);
+
+void
+ngx_http_cephfs_readline_exit(ngx_cycle_t *cycle);
+
+ngx_int_t
 ngx_http_cephfs_readline_request(ngx_http_request_t *r);
 
 
