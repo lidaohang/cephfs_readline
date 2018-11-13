@@ -28,7 +28,7 @@
 
 #include "ioctl.h"
 
-static const size_t  line_size = 1024;
+static const size_t  line_size = 1048576;
 static const size_t  object_size = 4194304;
 
 static ngx_int_t
@@ -351,13 +351,6 @@ ngx_http_cephfs_readline_request(ngx_http_request_t *r)
         goto done;
     }
 
-    if ( ctx->line.len == line_size ) {
-        ctx->body.data = ctx->line.data;
-        ctx->body.len  = ctx->line.len;
-        ctx->code = NGX_OK;
-        goto done;
-    }
-
     if ((p = strchr((char*)ctx->line.data, '\n')) != NULL) {
         *p = '\0';
         ctx->body.data = ctx->line.data;
@@ -366,9 +359,16 @@ ngx_http_cephfs_readline_request(ngx_http_request_t *r)
         goto done;
     }
 
+    if ( ctx->line.len == line_size ) {
+        ctx->body.data = ctx->line.data;
+        ctx->body.len  = ctx->line.len;
+        ctx->code = NGX_OK;
+        goto done;
+    }
+
     //next object_name
     ctx->next = 1;
-    ctx->next_offset = ctx->offset + 1024;
+    ctx->next_offset = ctx->offset + line_size;
     rc = ngx_http_cephfs_readline_process(r);
     if ( rc != NGX_OK ) {
         ctx->code = NGX_ERROR;
